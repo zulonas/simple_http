@@ -41,3 +41,11 @@
 *.su
 *.idb
 *.pdb
+
+# Temporary files
+*~
+*.swp
+*.swo
+
+# Project specific
+simple_http
