@@ -6,10 +6,16 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
 
-#define PORT "8080"
+#define PORT 8081
 #define MAX_CONN 1000
 #define BUF_SIZE 65535
+
+#define EEXIT(s) {\
+        perror((s));\
+        exit(1); }
 
 typedef struct {
 	  char *name, *value;
@@ -17,48 +23,38 @@ typedef struct {
 
 static header_t reqhdr[17] = {{"\0", "\0"}};
 
-int server_open()
+int server_open(uint16_t port)
 {
-	struct addrinfo hints;
-	struct addrinfo *result, *rp;
+	struct sockaddr_in srv_addr;
 	int sfd;
 	int enable = 1;
 
-	memset(&hints, 0, sizeof(hints));
-	hints.ai_family = AF_INET;	 /* IPv4 */
-	hints.ai_socktype = SOCK_STREAM; /* TCP */
-	hints.ai_flags = AI_PASSIVE;
-	hints.ai_protocol = 0;		 /* Any protocol */
+	sfd = socket(AF_INET, SOCK_STREAM, 0);
+	if (sfd == -1)
+		EEXIT("socket");
 
-	if (getaddrinfo(NULL, PORT, &hints, &result) != 0) {
-		perror("getaddrinfo");
-		return -1;
-	}
+	memset(&srv_addr, 0, sizeof(srv_addr));
+	srv_addr.sin_family = AF_INET;
+	srv_addr.sin_port = htons(port);
+	srv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
-	for (rp = result; rp != NULL; rp = rp->ai_next) {
-		sfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-		if (sfd == -1)
-			continue;
+	/* Reuse last socket if possible*/
+	if (setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) == -1)
+		EEXIT("setsockopt");
 
-		if (!bind(sfd, rp->ai_addr, rp->ai_addrlen))
-			break;	/* Success */
+	/* Bind socket to fd */
+	if (bind(sfd, (struct sockaddr *) &srv_addr, sizeof(srv_addr)) == -1)
+		EEXIT("bind");
 
-		close(sfd);
-	}
+	/* Set the server socket non-blocking */
+	fcntl(sfd, F_SETFL, O_NONBLOCK);
 
-	/* Reuse last socket address */
-	if (setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0)
-		perror("setsockopt");
+	printf("Starting server at: 127.0.0.1:%d\n", port);
 
-	#warning remove me
-	printf("Starting server at: 127.0.0.1:%s\n", PORT);
-
-	freeaddrinfo(result);
-	if (!rp) {
-		perror("bind");
-		return -1;
-	}
-
+	/* Start listening */	
+	if (listen(sfd, SOMAXCONN) == -1)
+		EEXIT("listen");
+	
 	return sfd;
 }
 
@@ -159,36 +155,41 @@ void respond(int clientfd)
 	free(buf);
 }
 
-void accept_connections(int listen_fd)
+void accept_connections(int sfd)
 {
 	struct sockaddr_in client_addr;
-	socklen_t len;
-	int clients[MAX_CONN];
+	socklen_t len = sizeof(struct sockaddr_in);
 	int slot = 0;
-
-	memset(&clients, -1, sizeof(clients));
+	int client;
 
 	while (1) {
-		len = sizeof(client_addr);
-		clients[slot] = accept(listen_fd, (struct sockaddr *) &client_addr, &len);
-
-		if (clients[slot] == -1) {
+		client = accept(sfd, (struct sockaddr *) &client_addr, &len);
+		if (client == -1) {
 			perror("accept");
-			exit(1);
+			continue;
 		}
-
-		if (fork() == 0) { /* child */
-			close(listen_fd);
-			respond(clients[slot]);
-			close(clients[slot]);
-			exit(0);
-		} else { /* parent */
-			close(clients[slot]);
-		}
-
-		while (clients[slot] != -1)
-			slot = (slot + 1) % MAX_CONN;
+		printf("http request received");
 	}
+	/*while (1) {*/
+		/*[>len = sizeof(client_addr);<]*/
+
+		/*if (clients[slot] == -1) {*/
+			/*perror("accept");*/
+			/*exit(1);*/
+		/*}*/
+
+		/*if (fork() == 0) { [> child <]*/
+			/*close(sfd);*/
+			/*respond(clients[slot]);*/
+			/*close(clients[slot]);*/
+			/*exit(0);*/
+		/*} else { [> parent <]*/
+			/*close(clients[slot]);*/
+		/*}*/
+
+		/*while (clients[slot] != -1)*/
+			/*slot = (slot + 1) % MAX_CONN;*/
+	/*}*/
 }
 
 
@@ -196,19 +197,11 @@ int main()
 {
 	int sfd;
 
-	sfd = server_open();
-	if (sfd == -1)
-		exit(1);
-
-	if (listen(sfd, SOMAXCONN) == -1)
-	{
-		perror("listen");
-		exit(1);
-	}
+	sfd = server_open(PORT);
 
 	/* Ignore SIGCHILD to avoid zombie threads */
 	/* TODO: change me, when threads */
-	signal(SIGCHLD, SIG_IGN);
+	/*signal(SIGCHLD, SIG_IGN);*/
 	accept_connections(sfd);
 
 	close(sfd);
